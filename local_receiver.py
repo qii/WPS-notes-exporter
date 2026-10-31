@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import subprocess
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -217,10 +218,56 @@ class ReceiverHandler(http.server.BaseHTTPRequestHandler):
         # Quiet log
         pass
 
-if __name__ == "__main__":
-    server = http.server.HTTPServer(("127.0.0.1", PORT), ReceiverHandler)
-    print(f"便签接收服务已启动: http://127.0.0.1:{PORT}", flush=True)
+def copy_script_to_clipboard():
+    js_path = os.path.join(BASE_DIR, "wps_scraper_snippet.js")
+    if not os.path.isfile(js_path):
+        print("      × 未找到 wps_scraper_snippet.js 脚本文件！", flush=True)
+        return False
     try:
+        cmd = [
+            "powershell", "-NoProfile", "-Command",
+            f"Set-Clipboard -Value (Get-Content -LiteralPath '{js_path}' -Raw -Encoding UTF8)"
+        ]
+        res = subprocess.run(cmd, capture_output=True, timeout=10)
+        if res.returncode == 0:
+            print("      √ 复制成功！去浏览器 F12 控制台直接按 Ctrl+V 即可粘贴。", flush=True)
+            return True
+        else:
+            print("      × 自动复制失败，请手动打开 wps_scraper_snippet.js 复制代码。", flush=True)
+            return False
+    except Exception as err:
+        print(f"      × 复制异常: {err}，请手动打开 wps_scraper_snippet.js 复制代码。", flush=True)
+        return False
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("         WPS 便签自动导出 - 一键准备助手")
+    print("=" * 60)
+    print("\n[1/2] 正在将导出脚本 (wps_scraper_snippet.js) 复制到剪贴板...")
+    copy_script_to_clipboard()
+
+    print("\n[2/2] 正在启动本地接收服务 (端口 8765)...")
+    try:
+        server = http.server.HTTPServer(("127.0.0.1", PORT), ReceiverHandler)
+        print(f"      √ 本地接收服务已就绪: http://127.0.0.1:{PORT}")
+        print("=" * 60)
+        print(" 现在请前往 WPS 便签网页版 (https://note.wps.cn)：")
+        print(" 1. 按 F12 打开开发者工具，切换到【控制台 (Console)】")
+        print(" 2. 按 Ctrl+V 粘贴脚本并回车运行！")
+        print(" (导出完成前请勿关闭此命令窗口)")
+        print("=" * 60 + "\n", flush=True)
         server.serve_forever()
+    except OSError as e:
+        if "Address already in use" in str(e) or getattr(e, "winerror", None) == 10048:
+            print(f"      √ 端口 {PORT} 已有接收服务在运行中，无需重复启动。")
+            print("=" * 60)
+            print(" 现在请前往 WPS 便签网页版 (https://note.wps.cn)：")
+            print(" 1. 按 F12 打开控制台 (Console)")
+            print(" 2. 按 Ctrl+V 粘贴脚本并回车运行即可！")
+            print("=" * 60 + "\n", flush=True)
+            input("按回车键退出此窗口...")
+        else:
+            print(f"      × 启动服务失败: {e}", file=sys.stderr)
+            input("按回车键退出...")
     except KeyboardInterrupt:
-        pass
+        print("\n接收服务已安全退出。")
