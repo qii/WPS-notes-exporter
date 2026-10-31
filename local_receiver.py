@@ -9,6 +9,15 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 
+# Windows 控制台原生 UTF-8 支持
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    os.system("chcp 65001 >nul 2>nul")
+
 PORT = 8765
 # 自动定位当前脚本所在目录，并在其下建立「导出结果」文件夹（适配任意电脑、任意路径）
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -223,21 +232,34 @@ def copy_script_to_clipboard():
     if not os.path.isfile(js_path):
         print("      × 未找到 wps_scraper_snippet.js 脚本文件！", flush=True)
         return False
+
+    # 1. 优先使用 Windows 内置 clip 命令 (原生秒级复制，无权限与策略限制)
+    try:
+        with open(js_path, "r", encoding="utf-8") as fp:
+            content = fp.read()
+        p = subprocess.Popen(["clip"], stdin=subprocess.PIPE, shell=True)
+        p.communicate(content.encode("utf-16le"))
+        if p.returncode == 0:
+            print("      √ 复制成功！去浏览器 F12 控制台直接按 Ctrl+V 即可粘贴。", flush=True)
+            return True
+    except Exception:
+        pass
+
+    # 2. 备用：PowerShell Set-Clipboard
     try:
         cmd = [
-            "powershell", "-NoProfile", "-Command",
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
             f"Set-Clipboard -Value (Get-Content -LiteralPath '{js_path}' -Raw -Encoding UTF8)"
         ]
-        res = subprocess.run(cmd, capture_output=True, timeout=10)
+        res = subprocess.run(cmd, capture_output=True, timeout=8)
         if res.returncode == 0:
             print("      √ 复制成功！去浏览器 F12 控制台直接按 Ctrl+V 即可粘贴。", flush=True)
             return True
-        else:
-            print("      × 自动复制失败，请手动打开 wps_scraper_snippet.js 复制代码。", flush=True)
-            return False
-    except Exception as err:
-        print(f"      × 复制异常: {err}，请手动打开 wps_scraper_snippet.js 复制代码。", flush=True)
-        return False
+    except Exception:
+        pass
+
+    print("      × 自动复制失败，请手动打开 wps_scraper_snippet.js 复制代码。", flush=True)
+    return False
 
 if __name__ == "__main__":
     print("=" * 60)

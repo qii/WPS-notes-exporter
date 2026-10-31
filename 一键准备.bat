@@ -1,13 +1,24 @@
 @echo off
+set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
 chcp 65001 >nul
 cd /d "%~dp0"
-title WPS 便签自动导出助手
+title WPS Notes Exporter
+
+where python >nul 2>nul
+if errorlevel 1 (
+    cls
+    echo ========================================================
+    echo  [Error] Python 3 was not found!
+    echo  Please install Python 3 from https://www.python.org
+    echo ========================================================
+    echo.
+    pause
+    exit /b 1
+)
 
 python -B local_receiver.py
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo.
-    echo ----------------------------------------------------
-    echo [提示] 启动失败，请检查是否已安装 Python 3 环境。
-    echo ----------------------------------------------------
     pause
 )
