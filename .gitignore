@@ -1,0 +1,27 @@
+# ====================================================
+# 隐私与便签数据（绝对禁止上传，防止个人数据与密码泄露）
+# ====================================================
+/导出结果/
+过程演示/
+*.zip
+
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# IDE 与编辑器配置
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# 操作系统临时文件
+Thumbs.db
+Desktop.ini
+.DS_Store
