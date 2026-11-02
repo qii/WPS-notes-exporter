@@ -6,8 +6,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
 
-const source = process.argv.includes('--baseline')
-  ? execFileSync('git', ['show', 'f2ee235:wps_scraper_snippet.js'], { encoding: 'utf8' })
+const sourceRef = process.argv.find(arg => arg.startsWith('--ref='))?.slice(6) ||
+  (process.argv.includes('--baseline') ? 'f2ee235' : null);
+const source = sourceRef
+  ? execFileSync('git', ['show', `${sourceRef}:wps_scraper_snippet.js`], { encoding: 'utf8' })
   : fs.readFileSync(path.join(__dirname, '..', 'wps_scraper_snippet.js'), 'utf8');
 
 async function run(options = {}) {
@@ -52,6 +54,32 @@ async function run(options = {}) {
       return undefined;
     }
   };
+  // Webpack 4 caches module execution, including the exporter's injected probe.
+  // A push() stub that always invokes the probe hides failures on repeated runs.
+  const modules = {}, cache = {};
+  function requireModule(id) {
+    if (cache[id]) return cache[id].exports;
+    const module = cache[id] = { exports: {} };
+    if (!modules[id]) throw Error(`Module ${id} unavailable`);
+    modules[id](module, module.exports, requireModule);
+    return module.exports;
+  }
+  requireModule.m = modules;
+  requireModule.c = cache;
+  const cryptoModule = { decrypt: value => value };
+  if (!options.noDecryptor) {
+    modules[options.alternateDecryptor ? '15e0' : '4eb3'] = (module) => { module.exports = { a: cryptoModule }; };
+  }
+  if (options.wrongDecryptor) modules['4eb3'] = module => { module.exports = { a: {} }; };
+  modules['99ba'] = module => { module.exports = {}; };
+  const webpackJsonp = {
+    push(entry) {
+      Object.assign(modules, entry[1]);
+      let result;
+      for (const deferred of entry[2] || []) result = requireModule(deferred[0]);
+      return result;
+    }
+  };
   const context = {
     TextEncoder, Blob, AbortController,
     console: { log: (...args) => logs.push(args.join(' ')), warn: (...args) => logs.push(args.join(' ')), error: (...args) => logs.push(args.join(' ')) },
@@ -60,8 +88,7 @@ async function run(options = {}) {
       createElement: () => new Element(), querySelectorAll: () => [],
       querySelector: () => options.noStore ? null : ({ __vue__: { $store: store } })
     },
-    window: { webpackJsonp: { push: entry => entry[1].__wps_export_probe__({}, {}, name =>
-      name === '4eb3' ? { a: { decrypt: value => value } } : {}) } },
+    window: { webpackJsonp },
     setTimeout: (fn, ms) => { if (ms < 1000) queueMicrotask(fn); return 1; }, clearTimeout() {},
     URL: { createObjectURL: blob => { if (options.zipError) throw Error('ZIP failure'); zip = blob; return 'blob:test'; } },
     alert: message => logs.push(message),
@@ -84,7 +111,10 @@ async function run(options = {}) {
         json: async () => options.saveError ? { status: 'error' } : { status: 'success', count: payload.notes.length } };
     }
   };
-  await vm.runInNewContext(source, context, { timeout: 5000 });
+  vm.createContext(context);
+  for (let i = 0; i < (options.runs || 1); i++) {
+    await vm.runInContext(source, context, { timeout: 5000 });
+  }
   return { panel: nodes.get('wps-exporter-panel'), logs: logs.join('\n'), calls, payloads, zip, autoDownloadCount };
 }
 
@@ -121,6 +151,18 @@ async function main() {
   assert.match(noStore.panel.html, /无法开始导出/);
   const noOutput = await run({ offline: true, zipError: true });
   assert.match(noOutput.panel.html, /导出未完成/);
-  console.log('PASS: 10 browser scenarios; nested user ID, pagination, direct API fallback, dates, ZIP link, empty/error handling, non-destructive probe.');
+  const repeated = await run({ runs: 3 });
+  assert.equal((repeated.logs.match(/成功挂载 WPS 原生解密组件/g) || []).length, 3,
+    'each run in the same page must obtain the cached WPS decryptor');
+  assert.doesNotMatch(repeated.logs, /未能挂载到 AES 解密器/);
+  const alternate = await run({ alternateDecryptor: true });
+  assert.match(alternate.logs, /成功挂载 WPS 原生解密组件/);
+  for (const options of [{ noDecryptor: true }, { wrongDecryptor: true }]) {
+    const missing = await run(options);
+    assert.match(missing.panel.html, /无法开始导出/);
+    assert.equal(missing.payloads.length, 0);
+    assert.equal(missing.zip, null);
+  }
+  console.log('PASS: 14 browser scenarios; user ID, pagination, saves, ZIP, cached Webpack probes, alternate/missing decryptors.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,5 +1,5 @@
 /**
- * WPS便签全自动分类导出助手 v5.4 (创建日期、分页读取及保存结果确认)
+ * WPS便签全自动分类导出助手 v5.5 (支持重复运行时获取解密器)
  * 
  * 核心升级与修复：
  * 1. 【彻底解决重复标题】正文首行不再拼接与文件名重复的一级标题，原生纯净排版，完美兼容 Obsidian/Notion。
@@ -15,8 +15,8 @@
  * 2. 在 WPS 便签网页版 (https://note.wps.cn) 页面按 F12 打开控制台 (Console)
  * 3. 粘贴本脚本全部代码，回车运行即可！
  */
-(async function runWpsScraperV5_4() {
-  console.log("%c[WPS便签导出助手 v5.4] 启动中...", "color: #1890ff; font-weight: bold; font-size: 14px;");
+(async function runWpsScraperV5_5() {
+  console.log("%c[WPS便签导出助手 v5.5] 启动中...", "color: #1890ff; font-weight: bold; font-size: 14px;");
 
   // 1. 创建页面浮动状态提示面板
   let statusPanel = document.getElementById('wps-exporter-panel');
@@ -38,7 +38,7 @@
     statusPanel.innerHTML = `
       <div style="font-size: 16px; font-weight: bold; color: #1f2328; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
         <span>📝 WPS便签导出助手</span>
-        <span style="font-size: 12px; font-weight: 600; color: #0969da; background: #ddf4ff; padding: 2px 8px; border-radius: 12px;">v5.4</span>
+        <span style="font-size: 12px; font-weight: 600; color: #0969da; background: #ddf4ff; padding: 2px 8px; border-radius: 12px;">v5.5</span>
       </div>
       <div style="font-size: 14px; font-weight: 600; color: #0969da; margin-bottom: 6px;">${title}</div>
       <div style="font-size: 12px; color: #656d76; line-height: 1.5; margin-bottom: 10px; max-height: 80px; overflow-y: auto;">${message}</div>
@@ -153,20 +153,37 @@
   let imgModule = null;
   let userId = null;
 
+  // 固定模块 ID 会命中 Webpack 缓存，使第二次运行不再执行探测函数。
+  // 只清理本次注入的探测模块；复用 WPS 已初始化的 AES 模块和密钥状态。
+  let req;
+  const probeId = `__wps_export_probe_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   try {
-    let req;
     window["webpackJsonp"].push([
-      ['__wps_export_probe__'],
-      { '__wps_export_probe__': (m, e, r) => { req = r; } },
-      [['__wps_export_probe__']]
+      [],
+      { [probeId]: (m, e, r) => { req = r; } },
+      [[probeId]]
     ]);
-    if (req) {
-      const mod = req('4eb3') || req('15e0');
-      decryptor = mod && (mod.a || mod);
-      imgModule = req('99ba');
+    if (!req) throw new Error('Webpack 未执行模块探测，请刷新网页并等待便签加载');
+    for (const moduleId of ['4eb3', '15e0']) {
+      // 不请求不存在的模块，避免在 WPS 的模块缓存中留下失败条目。
+      if (req.m && !Object.prototype.hasOwnProperty.call(req.m, moduleId)) continue;
+      try {
+        const mod = req(moduleId);
+        decryptor = [mod && mod.a, mod && mod.default, mod].find(
+          candidate => candidate && typeof candidate.decrypt === 'function'
+        );
+        if (decryptor) break;
+      } catch (error) {
+        addLog(`解密模块 ${moduleId} 加载失败：${error.message}`, true);
+      }
     }
+    try { imgModule = req('99ba'); }
+    catch (error) { addLog(`图片模块加载失败：${error.message}`, true); }
   } catch (e) {
     addLog(`Webpack 模块探测提示: ${e.message}`);
+  } finally {
+    if (req && req.c) delete req.c[probeId];
+    if (req && req.m) delete req.m[probeId];
   }
 
   // 获取当前用户 ID
@@ -183,7 +200,9 @@
   if (decryptor) {
     addLog('🔐 成功挂载 WPS 原生解密组件');
   } else {
-    addLog('⚠️ 警告：未能挂载到 AES 解密器，可能影响部分加密正文', true);
+    updateStatus('无法开始导出', '未取得 WPS 解密组件，已停止导出。请刷新网页，打开一条便签确认正文可见，再重新执行最新版脚本。');
+    addLog('未能挂载到 AES 解密器，已停止，避免将密文或摘要保存为完整正文。', true);
+    return;
   }
 
   if (imgModule && typeof imgModule.e === 'function') {
