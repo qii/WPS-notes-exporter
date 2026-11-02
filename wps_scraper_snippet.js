@@ -8,7 +8,7 @@
  * 4. 【彻底解决正文缺失】增加接口防抖重试机制 (Retry with Backoff)，并建立三级正文智能兜底。
  * 5. 【S3超长文章解密】全面兼容 bodyType: 1 的超长便签二进制流转码解密。
  * 6. 【规范相对路径】正文中图片语法严格改写为 ![](附件/xxx.jpg)，任意目录迁移均可完美渲染。
- * 7. 【智能精炼标题】自动提取合适短标题，自动规避标点截断，彻底移除创建/更新时间等杂乱元数据。
+ * 7. 【智能精炼标题】自动提取合适短标题，自动规避标点截断；正文首行保留原始创建日期。
  *
  * 使用方法：
  * 1. 确保本地接收服务正在运行 (python local_receiver.py)
@@ -106,6 +106,43 @@
       }
     }
     return s.trim();
+  }
+
+  // 使用原始创建时间，秒/毫秒时间戳及 ISO 日期均按本机时区显示。
+  function creationHeader(value) {
+    if (value === null || value === undefined || typeof value === 'boolean' ||
+        !['number', 'string'].includes(typeof value) || String(value).trim() === '') {
+      return '【创建时间未知 created】';
+    }
+    let created;
+    if (typeof value === 'number' || /^\d+(?:\.\d+)?$/.test(value.trim())) {
+      const timestamp = Number(value);
+      if (!Number.isFinite(timestamp) || timestamp <= 0) return '【创建时间未知 created】';
+      created = new Date(timestamp > 10000000000 ? timestamp : timestamp * 1000);
+    } else {
+      // 日期字符串不含时间时按本地零点解析，避免被 Date 当作 UTC 日期。
+      const text = value.trim();
+      if (!/^\d{4}-\d{2}-\d{2}(?:[T ].*)?$/.test(text)) return '【创建时间未知 created】';
+      created = new Date(text.length === 10 ? `${text}T00:00:00` : text.replace(' ', 'T'));
+      const dateParts = text.slice(0, 10).split('-').map(Number);
+      const calendarDate = new Date(0);
+      calendarDate.setFullYear(dateParts[0], dateParts[1] - 1, dateParts[2]);
+      if (calendarDate.getFullYear() !== dateParts[0] ||
+          calendarDate.getMonth() + 1 !== dateParts[1] || calendarDate.getDate() !== dateParts[2]) {
+        return '【创建时间未知 created】';
+      }
+    }
+    if (Number.isNaN(created.getTime())) return '【创建时间未知 created】';
+    return `【${created.getFullYear()}.${created.getMonth() + 1}.${created.getDate()} created】`;
+  }
+
+  function noteCreationTime(note) {
+    const cached = store.state.notes && store.state.notes.all && store.state.notes.all[note.noteId];
+    return note.createTime ?? (cached && cached.createTime) ?? null;
+  }
+
+  function exportMarkdown(content, title, createTime) {
+    return creationHeader(createTime) + '\n\n' + cleanMarkdownText(content, title) + '\n';
   }
 
   // 2. 挂载 Webpack 核心模块 (原生 AES 解密器 4eb3 与 图片签名下载模块 99ba)
@@ -616,14 +653,14 @@
         finalTitle
       );
 
-      // 保持纯净正文，确保无首行重复一级标题与转义乱码
-      const finalCleanContent = cleanMarkdownText(updatedContent, finalTitle);
-      let mdText = finalCleanContent + '\n';
+      const createTime = noteCreationTime(note);
+      const mdText = exportMarkdown(updatedContent, finalTitle, createTime);
 
       const noteItem = {
         group: cat.groupName,
         title: finalTitle,
         content: updatedContent,
+        createTime,
         noteId: noteId,
         images: imagesForReceiver
       };
@@ -729,11 +766,10 @@
           smartTitle
         );
 
-        // 保持纯净正文，确保无首行重复一级标题与转义乱码
-        const finalCleanContent = cleanMarkdownText(updatedContent, smartTitle);
-        let mdText = finalCleanContent + '\n';
+        const createTime = noteCreationTime(note);
+        const mdText = exportMarkdown(updatedContent, smartTitle, createTime);
 
-        const noteItem = { group: '未分类便签', title: smartTitle, content: updatedContent, noteId: note.noteId, images: imagesForReceiver };
+        const noteItem = { group: '未分类便签', title: smartTitle, content: updatedContent, createTime, noteId: note.noteId, images: imagesForReceiver };
 
         allExtractedNotes.push(noteItem);
         uncatNotesForSync.push(noteItem);

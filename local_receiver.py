@@ -43,6 +43,28 @@ def format_time(ts):
     except Exception:
         return str(ts)
 
+def creation_header(value):
+    """使用便签创建时间，兼容秒/毫秒时间戳及 ISO 日期，按本机时区显示。"""
+    try:
+        if isinstance(value, bool) or value is None:
+            raise ValueError("missing creation time")
+        if isinstance(value, (int, float)) or (
+            isinstance(value, str) and re.fullmatch(r"\d+(?:\.\d+)?", value.strip())
+        ):
+            timestamp = float(value)
+            if timestamp <= 0:
+                raise ValueError("invalid creation time")
+            if timestamp > 10000000000:
+                timestamp /= 1000
+            created = datetime.fromtimestamp(timestamp)
+        else:
+            created = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            if created.tzinfo is not None:
+                created = created.astimezone()
+        return f"【{created.year}.{created.month}.{created.day} created】"
+    except (ValueError, TypeError, AttributeError, OverflowError, OSError):
+        return "【创建时间未知 created】"
+
 def clean_markdown_text(text, title=None):
     if not text:
         return ""
@@ -107,7 +129,6 @@ class ReceiverHandler(http.server.BaseHTTPRequestHandler):
                     group_name = sanitize_filename(item.get("group") or "未分类")
                     title = sanitize_filename(item.get("title") or "无标题便签").replace(r"\0", "0")
                     content = item.get("content", "").replace(r"\0", "0")
-                    create_time = format_time(item.get("createTime"))
                     update_time = format_time(item.get("updateTime") or item.get("infoUpdateTime"))
                     star = item.get("star", 0)
 
@@ -184,6 +205,7 @@ class ReceiverHandler(http.server.BaseHTTPRequestHandler):
                         counter += 1
 
                     body_text = clean_markdown_text(content, title)
+                    body_text = creation_header(item.get("createTime")) + "\n\n" + body_text
                     with open(file_path, "w", encoding="utf-8") as f:
                         f.write(body_text + "\n")
 
@@ -233,6 +255,22 @@ def copy_script_to_clipboard():
         print("      × 未找到 wps_scraper_snippet.js 脚本文件！", flush=True)
         return False
 
+    if sys.platform == "darwin":
+        try:
+            with open(js_path, "r", encoding="utf-8") as fp:
+                content = fp.read()
+            env = os.environ.copy()
+            env["LC_ALL"] = "en_US.UTF-8"
+            subprocess.run(
+                ["pbcopy"], input=content.encode("utf-8"),
+                check=True, capture_output=True, timeout=8, env=env,
+            )
+            print("      √ 复制成功！去浏览器控制台直接按 Command+V 即可粘贴。", flush=True)
+            return True
+        except (OSError, subprocess.SubprocessError):
+            print("      × 自动复制失败，请手动打开 wps_scraper_snippet.js 复制代码。", flush=True)
+            return False
+
     # 1. 优先使用 Windows 内置 clip 命令 (原生秒级复制，无权限与策略限制)
     try:
         with open(js_path, "r", encoding="utf-8") as fp:
@@ -262,6 +300,8 @@ def copy_script_to_clipboard():
     return False
 
 if __name__ == "__main__":
+    console_shortcut = "Command+Option+J" if sys.platform == "darwin" else "F12"
+    paste_shortcut = "Command+V" if sys.platform == "darwin" else "Ctrl+V"
     print("=" * 60)
     print("         WPS 便签自动导出 - 一键准备助手")
     print("=" * 60)
@@ -274,8 +314,8 @@ if __name__ == "__main__":
         print(f"      √ 本地接收服务已就绪: http://127.0.0.1:{PORT}")
         print("=" * 60)
         print(" 现在请前往 WPS 便签网页版 (https://note.wps.cn)：")
-        print(" 1. 按 F12 打开开发者工具，切换到【控制台 (Console)】")
-        print(" 2. 按 Ctrl+V 粘贴脚本并回车运行！")
+        print(f" 1. 按 {console_shortcut} 打开开发者工具，切换到【控制台 (Console)】")
+        print(f" 2. 按 {paste_shortcut} 粘贴脚本并回车运行！")
         print(" (导出完成前请勿关闭此命令窗口)")
         print("=" * 60 + "\n", flush=True)
         server.serve_forever()
@@ -284,8 +324,8 @@ if __name__ == "__main__":
             print(f"      √ 端口 {PORT} 已有接收服务在运行中，无需重复启动。")
             print("=" * 60)
             print(" 现在请前往 WPS 便签网页版 (https://note.wps.cn)：")
-            print(" 1. 按 F12 打开控制台 (Console)")
-            print(" 2. 按 Ctrl+V 粘贴脚本并回车运行即可！")
+            print(f" 1. 按 {console_shortcut} 打开控制台 (Console)")
+            print(f" 2. 按 {paste_shortcut} 粘贴脚本并回车运行即可！")
             print("=" * 60 + "\n", flush=True)
             input("按回车键退出此窗口...")
         else:
