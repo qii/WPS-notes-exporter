@@ -95,6 +95,12 @@ class ReceiverHandler(http.server.BaseHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"service": "wps-notes-exporter", "status": "ready"}).encode("utf-8"))
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -321,6 +327,15 @@ if __name__ == "__main__":
         server.serve_forever()
     except OSError as e:
         if "Address already in use" in str(e) or getattr(e, "winerror", None) == 10048:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=2) as response:
+                    health = json.load(response)
+                if health.get("service") != "wps-notes-exporter":
+                    raise ValueError("端口上运行的不是当前接收器")
+            except (OSError, ValueError):
+                print(f"      × 端口 {PORT} 被旧版接收器或其他程序占用。", file=sys.stderr)
+                print("请在之前启动服务的终端按 Ctrl+C 关闭旧服务，再重新运行一键准备。", file=sys.stderr)
+                sys.exit(1)
             print(f"      √ 端口 {PORT} 已有接收服务在运行中，无需重复启动。")
             print("=" * 60)
             print(" 现在请前往 WPS 便签网页版 (https://note.wps.cn)：")

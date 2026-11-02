@@ -1,5 +1,5 @@
 /**
- * WPS便签全自动分类导出助手 v5.3 (正文去重题、数字零与符号防转义纯净版)
+ * WPS便签全自动分类导出助手 v5.4 (创建日期、分页读取及保存结果确认)
  * 
  * 核心升级与修复：
  * 1. 【彻底解决重复标题】正文首行不再拼接与文件名重复的一级标题，原生纯净排版，完美兼容 Obsidian/Notion。
@@ -15,8 +15,8 @@
  * 2. 在 WPS 便签网页版 (https://note.wps.cn) 页面按 F12 打开控制台 (Console)
  * 3. 粘贴本脚本全部代码，回车运行即可！
  */
-(async function runWpsScraperV5_3() {
-  console.log("%c[WPS便签导出助手 v5.3] 启动中...", "color: #1890ff; font-weight: bold; font-size: 14px;");
+(async function runWpsScraperV5_4() {
+  console.log("%c[WPS便签导出助手 v5.4] 启动中...", "color: #1890ff; font-weight: bold; font-size: 14px;");
 
   // 1. 创建页面浮动状态提示面板
   let statusPanel = document.getElementById('wps-exporter-panel');
@@ -34,10 +34,11 @@
   }
 
   function updateStatus(title, message, progress = -1) {
+    const previousLog = document.getElementById('wps-log-box');
     statusPanel.innerHTML = `
       <div style="font-size: 16px; font-weight: bold; color: #1f2328; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
         <span>📝 WPS便签导出助手</span>
-        <span style="font-size: 12px; font-weight: 600; color: #0969da; background: #ddf4ff; padding: 2px 8px; border-radius: 12px;">v5.2 增强版</span>
+        <span style="font-size: 12px; font-weight: 600; color: #0969da; background: #ddf4ff; padding: 2px 8px; border-radius: 12px;">v5.4</span>
       </div>
       <div style="font-size: 14px; font-weight: 600; color: #0969da; margin-bottom: 6px;">${title}</div>
       <div style="font-size: 12px; color: #656d76; line-height: 1.5; margin-bottom: 10px; max-height: 80px; overflow-y: auto;">${message}</div>
@@ -49,6 +50,7 @@
       ` : ''}
       <div id="wps-log-box" style="margin-top: 10px; background: #f6f8fa; border-radius: 6px; padding: 8px; font-size: 11px; color: #24292f; max-height: 200px; overflow-y: auto; line-height: 1.6; font-family: monospace;"></div>
     `;
+    if (previousLog) document.getElementById('wps-log-box').replaceWith(previousLog);
   }
 
   function addLog(msg, isWarn = false) {
@@ -70,6 +72,7 @@
   const store = rootVue ? rootVue.$store : null;
 
   if (!store) {
+    updateStatus('无法开始导出', '未找到便签数据模块，请登录 note.wps.cn，等待便签列表显示后重新执行。');
     alert('未能找到便签数据模块，请确认在 note.wps.cn 网页内运行。');
     return;
   }
@@ -168,7 +171,8 @@
 
   // 获取当前用户 ID
   try {
-    userId = (store.state.user && (store.state.user.userid || store.state.user.userId || store.state.user.id)) ||
+    const userState = store.state.user && (store.state.user.user || store.state.user);
+    userId = (userState && (userState.userid || userState.userId || userState.id)) ||
              (rootVue && (rootVue.userId || rootVue.userid));
     if (!userId) {
       const cookieMatch = document.cookie.match(/(?:wps_sid|userid|uid)=(\d+)/);
@@ -453,12 +457,77 @@
   addLog('正在查找全部便签分类...');
   const seenGroupIds = new Set();
   const allCategories = [];
+  let readFailures = 0;
 
-  try { await store.dispatch('getGroups'); } catch (e) {}
+  async function fetchWithTimeout(url, options = {}, timeout = 30000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
-  const storeGroups = (store.state.group && store.state.group.groups) ||
-                      (store.getters && store.getters.availableGroups) || [];
+  function responseData(response, field) {
+    if (!response || (response.status !== undefined && response.status !== 200) ||
+        !response.data || !Array.isArray(response.data[field])) {
+      throw new Error(`接口返回异常（${response ? response.status : '无响应'}，缺少 ${field}）`);
+    }
+    return response.data[field];
+  }
+
+  async function readNotePage(groupId, startIndex, rows) {
+    const isHome = groupId === null;
+    if (isHome && !userId) throw new Error('未找到登录用户 ID，请刷新并重新登录后重试');
+    const params = isHome ? { uid: userId, startIndex, rows } : { groupId, startIndex, rows };
+    try {
+      return responseData(await store.dispatch(isHome ? 'getHomeNotes' : 'getNotesByGroupId', params), 'webNotes');
+    } catch (error) {
+      addLog(`列表读取失败，尝试直接请求：${error.message}`, true);
+      const url = isHome
+        ? `/notesvr/v2/user/${encodeURIComponent(userId)}/home/startindex/${startIndex}/rows/${rows}/notes`
+        : '/notesvr/web/getnotes/group';
+      const response = await fetchWithTimeout(`https://note-api.wps.cn${url}`, isHome ? {
+        credentials: 'include', headers: { 'X-user-key': String(userId) }
+      } : {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      });
+      if (!response.ok) throw new Error(`读取便签列表 HTTP ${response.status}`);
+      const data = await response.json();
+      return responseData({ status: response.status, data: data.data || data }, 'webNotes');
+    }
+  }
+
+  async function readAllNotes(groupId) {
+    const notes = [], seen = new Set();
+    const rows = 100;
+    for (let startIndex = 0; ; startIndex += rows) {
+      const page = await readNotePage(groupId, startIndex, rows);
+      if (page.length && page.every(note => seen.has(note.noteId))) {
+        throw new Error('接口重复返回同一页，已停止以避免漏记或无限循环');
+      }
+      for (const note of page) {
+        if (!note.noteId) throw new Error('列表数据缺少 noteId');
+        if (!seen.has(note.noteId)) { seen.add(note.noteId); notes.push(note); }
+      }
+      if (page.length < rows) return notes;
+      await delay(60);
+    }
+  }
+
+  let storeGroups;
+  try {
+    storeGroups = responseData(await store.dispatch('getAllGroups'), 'noteGroups');
+  } catch (error) {
+    readFailures++;
+    addLog(`刷新分类失败，尝试使用页面已有分类：${error.message}`, true);
+    storeGroups = (store.getters && store.getters.availableGroups) ||
+      Object.values((store.state.group && store.state.group.all) || {});
+  }
   for (const g of storeGroups) {
+    if (g.valid === 0) continue;
     const gid = g.groupId || g.id;
     const gname = g.groupName || g.name;
     if (gid && !seenGroupIds.has(gid)) {
@@ -478,20 +547,39 @@
 
   addLog(`✅ 成功识别到 ${allCategories.length} 个分类：` + allCategories.map(c => c.groupName).join('、'));
 
-  // 7. 探测本地接收服务并初始化
+  // 7. 只读探测；连接失败或抓取为空时保留之前的导出结果。
   let localServiceOnline = false;
+  let localSavedCount = 0;
   try {
-    const pingRes = await fetch('http://127.0.0.1:8765/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clean: true, notes: [] })
-    });
+    const pingRes = await fetchWithTimeout('http://127.0.0.1:8765/health', {}, 5000);
     const pingData = await pingRes.json();
-    if (pingData && pingData.status === 'success') {
+    if (pingRes.ok && pingData.service === 'wps-notes-exporter') {
       localServiceOnline = true;
       addLog('✅ 本地磁盘直写服务已就绪 (http://127.0.0.1:8765)');
+    } else {
+      throw new Error('本地服务版本不匹配，请关闭旧终端后重新运行一键准备');
     }
-  } catch (err) {}
+  } catch (err) {
+    addLog(`本地接收器不可用：${err.message}。请重启一键准备，并允许浏览器访问本地网络；本次仍会准备 ZIP。`, true);
+  }
+
+  async function saveLocal(notes) {
+    if (!localServiceOnline || notes.length === 0) return;
+    try {
+      const response = await fetchWithTimeout('http://127.0.0.1:8765/save', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clean: false, notes })
+      }, 120000);
+      const result = await response.json();
+      if (!response.ok || result.status !== 'success' || result.count !== notes.length) {
+        throw new Error(`保存未确认（HTTP ${response.status}，确认数量 ${result.count ?? 0}/${notes.length}）`);
+      }
+      localSavedCount += result.count;
+      addLog(`💾 已确认保存 ${result.count} 篇便签到本地`);
+    } catch (error) {
+      addLog(`本地写入失败：${error.message}。请使用最后的 ZIP 下载链接。`, true);
+    }
+  }
 
   const allExtractedNotes = [];
   const processedNoteIds = new Set();
@@ -509,38 +597,12 @@
     addLog(`>>> 开始处理分类: [${cat.groupName}]`);
 
     let notesInCat = [];
-    let startIndex = 0, rows = 100, hasMore = true;
-
-    while (hasMore) {
-      try {
-        let webNotes = [];
-        try {
-          const res = await store.dispatch('getNotesByGroupId', { groupId: cat.groupId, rows, startIndex });
-          if (res && res.data && res.data.webNotes) webNotes = res.data.webNotes;
-        } catch (dispatchErr) {
-          const res = await fetch('/notesvr/web/getnotes/group', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ groupId: cat.groupId, rows, startIndex })
-          });
-          const respData = await res.json();
-          webNotes = (respData && respData.data && respData.data.webNotes) || [];
-        }
-
-        if (webNotes.length > 0) {
-          notesInCat.push(...webNotes);
-          startIndex += rows;
-          if (webNotes.length < rows) {
-            hasMore = false;
-          }
-        } else {
-          hasMore = false;
-        }
-      } catch (err) {
-        hasMore = false;
-      }
-      await delay(60);
+    try {
+      notesInCat = await readAllNotes(cat.groupId);
+    } catch (error) {
+      readFailures++;
+      addLog(`分类 [${cat.groupName}] 读取失败：${error.message}`, true);
+      continue;
     }
 
     addLog(`分类 [${cat.groupName}] 共有 ${notesInCat.length} 篇便签，开始获取正文与附件图片...`);
@@ -677,23 +739,13 @@
       await delay(40);
     }
 
-    if (localServiceOnline && currentCatNotesForSync.length > 0) {
-      try {
-        await fetch('http://127.0.0.1:8765/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ clean: false, notes: currentCatNotesForSync })
-        });
-        addLog(`💾 [${cat.groupName}] 已同步写入本地磁盘`);
-      } catch (err) {}
-    }
+    await saveLocal(currentCatNotesForSync);
   }
 
   // 8. 检查未归类独立便签
   try {
     addLog('正在检查未归类的独立便签...');
-    const homeRes = await store.dispatch('getHomeNotes');
-    const homeNotes = (homeRes && homeRes.data && homeRes.data.webNotes) || [];
+    const homeNotes = await readAllNotes(null);
     let uncatNotesForSync = [];
 
     for (const note of homeNotes) {
@@ -778,15 +830,17 @@
       }
     }
 
-    if (uncatNotesForSync.length > 0 && localServiceOnline) {
-      await fetch('http://127.0.0.1:8765/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clean: false, notes: uncatNotesForSync })
-      });
-      addLog(`补充了 ${uncatNotesForSync.length} 篇未归类便签`);
-    }
-  } catch (e) {}
+    await saveLocal(uncatNotesForSync);
+  } catch (e) {
+    readFailures++;
+    addLog(`未分类便签读取失败：${e.message}`, true);
+  }
+
+  if (allExtractedNotes.length === 0) {
+    updateStatus('没有导出任何便签', '本次读取到 0 篇，不生成空 ZIP。请查看下方错误；确认已登录且页面便签列表已加载。');
+    addLog('导出未完成：读取到 0 篇便签。', true);
+    return;
+  }
 
   addLog(`🎉 全部抓取完成！共导出 ${allExtractedNotes.length} 篇便签`);
   updateStatus('正在打包下载...', `已提取 ${allExtractedNotes.length} 篇便签及全部图片附件，正在打包 ZIP...`, 95);
@@ -884,23 +938,38 @@
     return new Blob(allChunks, { type: 'application/zip' });
   }
 
+  let downloadLink = null;
   try {
     const zipBlob = buildBinaryZipBlob(zipFiles);
     const downloadUrl = URL.createObjectURL(zipBlob);
     const a = document.createElement('a');
     a.href = downloadUrl;
     a.download = `WPS便签全部导出_${new Date().toISOString().slice(0, 10)}.zip`;
+    a.textContent = `点击下载 ZIP（${allExtractedNotes.length} 篇便签）`;
+    a.style.cssText = 'display:block;margin-top:12px;color:#0969da;font-weight:bold;';
     document.body.appendChild(a);
+    downloadLink = a;
     a.click();
-    setTimeout(() => URL.revokeObjectURL(downloadUrl), 60000);
-    addLog('📦 浏览器 ZIP 压缩包已触发自动下载！');
+    // 保留链接直到页面刷新，方便浏览器拦截自动下载后手动重试。
+    addLog('📦 ZIP 已生成，已尝试自动下载；没有下载文件时请点击下方链接。');
   } catch (zipErr) {
     addLog(`ZIP 打包提示: ${zipErr.message}`);
   }
 
-  if (localServiceOnline) {
-    updateStatus('导出全部完成！', `已自动同步写入本地【导出结果】文件夹！<br>包含 ${allExtractedNotes.length} 篇便签及高清附件图片！`, 100);
-  } else {
-    updateStatus('导出全部完成！', `共导出 ${allExtractedNotes.length} 篇便签，ZIP 备份压缩包已下载到您的浏览器下载文件夹！`, 100);
+  const total = allExtractedNotes.length;
+  const title = readFailures ? '导出有遗漏，请查看日志' :
+    localSavedCount === total ? '本地保存完成' : downloadLink ? 'ZIP 已准备好，请确认下载' : '导出未完成';
+  updateStatus(title, `已提取 ${total} 篇；本地确认保存 ${localSavedCount} 篇。<br>` +
+    (downloadLink ? 'ZIP 已生成，可点击下方链接下载。' : 'ZIP 生成失败，请查看日志。') +
+    (readFailures ? `<br>有 ${readFailures} 处读取失败。` : ''), 100);
+  if (downloadLink) statusPanel.appendChild(downloadLink);
+})().catch(error => {
+  console.error('[WPS导出] 导出中断：', error);
+  const panel = document.getElementById('wps-exporter-panel');
+  if (panel) {
+    const message = document.createElement('div');
+    message.style.color = '#cf222e';
+    message.textContent = `导出中断：${error.message}。请将此错误反馈以便排查。`;
+    panel.appendChild(message);
   }
-})();
+});
